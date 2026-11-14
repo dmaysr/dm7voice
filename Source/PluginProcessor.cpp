@@ -74,8 +74,10 @@ bool DM7VoiceProcessor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 void DM7VoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     fs = sampleRate;
-    const auto numCh = (juce::uint32) juce::jmax (1, getTotalNumOutputChannels());
-    juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) samplesPerBlock, numCh };
+    // Always size everything for stereo and at least a typical block, whatever the current
+    // layout and block size, so a host that changes either without re-preparing can't overrun us.
+    preparedBlock = juce::jmax (samplesPerBlock, 64);
+    juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) preparedBlock, (juce::uint32) maxChannels };
 
     for (auto& ch : filters)
         for (auto& f : ch)
@@ -93,7 +95,7 @@ void DM7VoiceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     needsDesign = true;
 
     oversampler->reset();
-    oversampler->initProcessing ((size_t) samplesPerBlock);
+    oversampler->initProcessing ((size_t) preparedBlock);
     const auto latency = oversampler->getLatencyInSamples();
     setLatencySamples (juce::roundToInt (latency));
 
@@ -141,12 +143,25 @@ void DM7VoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     for (int ch = numIn; ch < numOut; ++ch)
         buffer.clear (ch, 0, buffer.getNumSamples());
 
-    const int numCh = juce::jmin (numOut, maxChannels);
+    const int numCh = juce::jmin (numOut, buffer.getNumChannels(), maxChannels);
     const int n = buffer.getNumSamples();
-    if (n == 0 || numCh == 0)
+    if (n == 0 || numCh == 0 || preparedBlock == 0)
         return;
 
-    juce::dsp::AudioBlock<float> block (buffer.getArrayOfWritePointers(), (size_t) numCh, (size_t) n);
+    // Some hosts send blocks larger than the size they prepared us for. Never trust the
+    // block size: work through it in chunks no larger than what our buffers can hold.
+    std::array<float*, maxChannels> ptrs {};
+    for (int start = 0; start < n; start += preparedBlock)
+    {
+        for (int ch = 0; ch < numCh; ++ch)
+            ptrs[(size_t) ch] = buffer.getWritePointer (ch, start);
+        processChunk (ptrs.data(), numCh, juce::jmin (preparedBlock, n - start));
+    }
+}
+
+void DM7VoiceProcessor::processChunk (float* const* data, int numCh, int n)
+{
+    juce::dsp::AudioBlock<float> block (data, (size_t) numCh, (size_t) n);
     juce::dsp::ProcessContextReplacing<float> ctx (block);
 
     inputGain.setGainDecibels (pInput->load());
@@ -176,7 +191,7 @@ void DM7VoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
         for (int ch = 0; ch < numCh; ++ch)
         {
-            auto* d = buffer.getWritePointer (ch, start);
+            auto* d = data[ch] + start;
             auto& fl = filters[(size_t) ch];
             for (int i = 0; i < len; ++i)
             {
@@ -199,7 +214,7 @@ void DM7VoiceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     // DC blocker (removes offset from the asymmetric stage)
     for (int ch = 0; ch < numCh; ++ch)
     {
-        auto* d = buffer.getWritePointer (ch);
+        auto* d = data[ch];
         double x1 = dcX[(size_t) ch], y1 = dcY[(size_t) ch];
         for (int i = 0; i < n; ++i)
         {

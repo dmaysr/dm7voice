@@ -53,6 +53,7 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void processSaturation (juce::dsp::AudioBlock<float>& block, float drive);
+    void processChunk (float* const* data, int numCh, int numSamples);
 
     std::atomic<float>* pInput = nullptr;
     std::atomic<float>* pProximity = nullptr;
@@ -63,6 +64,7 @@ private:
     std::atomic<float>* pOutput = nullptr;
 
     double fs = 44100.0;
+    int preparedBlock = 0;
     static constexpr int maxChannels = 2;
     static constexpr int subBlock = 32;
 

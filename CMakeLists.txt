@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(DM7Voice VERSION 1.0.0)
+project(DM7Voice VERSION 1.0.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "")
@@ -54,3 +54,16 @@ target_link_libraries(DM7Voice
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Test host that loads the built VST3 like Audio All Station does (used by CI)
+option(DM7_BUILD_HOST_TEST "Build the DM7HostTest plugin host" OFF)
+if(DM7_BUILD_HOST_TEST)
+    juce_add_gui_app(DM7HostTest PRODUCT_NAME "DM7HostTest")
+    juce_generate_juce_header(DM7HostTest)
+    target_sources(DM7HostTest PRIVATE Tests/HostTest.cpp)
+    target_compile_definitions(DM7HostTest PRIVATE
+        JUCE_PLUGINHOST_VST3=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(DM7HostTest PRIVATE
+        juce::juce_audio_utils juce::juce_audio_processors
+        juce::juce_recommended_config_flags)
+endif()

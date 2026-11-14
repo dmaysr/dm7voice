@@ -32,21 +32,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev ninja-build
+            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev ninja-build xvfb
 
       - name: Configure
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DDM7_BUILD_HOST_TEST=ON
           elif [ "$RUNNER_OS" = "Linux" ]; then
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDM7_BUILD_HOST_TEST=ON
           else
-            cmake -B build
+            cmake -B build -DDM7_BUILD_HOST_TEST=ON
           fi
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: Host test (loads the VST3 like Audio All Station's Apply)
+        shell: bash
+        run: |
+          ART=build/DM7HostTest_artefacts/Release
+          PLUG="$PWD/build/DM7Voice_artefacts/Release/VST3/DM7 Voice.vst3"
+          LOG="$PWD/hosttest.log"
+          set +e
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            "$ART/DM7HostTest.app/Contents/MacOS/DM7HostTest" "$PLUG" "$LOG"
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            "$ART/DM7HostTest.exe" "$PLUG" "$LOG"
+          else
+            xvfb-run -a -s "-screen 0 1280x800x24" "$ART/DM7HostTest" "$PLUG" "$LOG"
+          fi
+          CODE=$?
+          set -e
+          cat "$LOG" || true
+          exit $CODE
 
       - name: Package
         shell: bash
