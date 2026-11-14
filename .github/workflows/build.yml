@@ -1,0 +1,82 @@
+name: Build DM7 Voice
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: Linux
+          - os: windows-latest
+            name: Windows
+          - os: macos-14
+            name: macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev ninja-build
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -B build
+          fi
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          ART=build/DM7Voice_artefacts/Release
+          cp -R "$ART/VST3/DM7 Voice.vst3" dist/
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cp -R "$ART/AU/DM7 Voice.component" dist/
+            cp -R "$ART/Standalone/DM7 Voice.app" dist/
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            cp "$ART/Standalone/DM7 Voice.exe" dist/
+          else
+            cp "$ART/Standalone/DM7 Voice" dist/
+          fi
+          cp README.md dist/
+          cd dist && 7z a ../DM7Voice-${{ matrix.name }}.zip . > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DM7Voice-${{ matrix.name }}
+          path: DM7Voice-${{ matrix.name }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.zip
