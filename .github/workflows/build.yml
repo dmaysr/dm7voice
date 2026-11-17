@@ -6,98 +6,42 @@ on:
     tags: ["v*"]
   workflow_dispatch:
   release:
-    types: [published]
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            name: Linux
-          - os: windows-latest
-            name: Windows
-          - os: macos-latest
-            name: macOS
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
-            libxcursor-dev libxext-dev libfreetype-dev libfontconfig1-dev ninja-build xvfb
-
-      - name: Configure
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DDM7_BUILD_HOST_TEST=ON
-          elif [ "$RUNNER_OS" = "Linux" ]; then
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDM7_BUILD_HOST_TEST=ON
-          else
-            cmake -B build -DDM7_BUILD_HOST_TEST=ON
-          fi
-
-      - name: Build
-        run: cmake --build build --config Release --parallel
-
-      - name: Host test (loads the VST3 like Audio All Station's Apply)
-        shell: bash
-        run: |
-          ART=build/DM7HostTest_artefacts/Release
-          PLUG="$PWD/build/DM7Voice_artefacts/Release/VST3/DM7 Voice.vst3"
-          LOG="$PWD/hosttest.log"
-          set +e
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            "$ART/DM7HostTest.app/Contents/MacOS/DM7HostTest" "$PLUG" "$LOG"
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            "$ART/DM7HostTest.exe" "$PLUG" "$LOG"
-          else
-            xvfb-run -a -s "-screen 0 1280x800x24" "$ART/DM7HostTest" "$PLUG" "$LOG"
-          fi
-          CODE=$?
-          set -e
-          cat "$LOG" || true
-          exit $CODE
-
-      - name: Package
-        shell: bash
-        run: |
-          mkdir -p dist
-          ART=build/DM7Voice_artefacts/Release
-          cp -R "$ART/VST3/DM7 Voice.vst3" dist/
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cp -R "$ART/AU/DM7 Voice.component" dist/
-            cp -R "$ART/Standalone/DM7 Voice.app" dist/
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            cp "$ART/Standalone/DM7 Voice.exe" dist/
-          else
-            cp "$ART/Standalone/DM7 Voice" dist/
-          fi
-          cp README.md dist/
-          cd dist && 7z a ../DM7Voice-${{ matrix.name }}.zip . > /dev/null
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: DM7Voice-${{ matrix.name }}
-          path: DM7Voice-${{ matrix.name }}.zip
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Every passing build on main publishes v<version> from CMakeLists.txt, with the three
+    # zips, and removes older releases so only the latest is kept (same as Audio All Station).
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: out
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: out/*.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -m1 -oP 'project\(DM7Voice VERSION \K[0-9.]+' CMakeLists.txt)
+          tag="v$version"
+          for f in out/DM7Voice-*.zip; do
+            base=$(basename "$f" .zip)
+            mv "$f" "out/${base/DM7Voice-/DM7Voice-$version-}.zip"
+          done
+          ls -la out
+          notes="SM7B-style dynamic broadcast mic tone plugin. Windows: VST3 + standalone. macOS: VST3, AU + app (universal, unsigned; see README to open). Linux: VST3 + standalone. Install steps are in README.md inside each zip."
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" out/*.zip --clobber
+            gh release edit "$tag" --draft=false --latest
+          else
+            gh release create "$tag" out/*.zip --title "DM7 Voice $tag" --notes "$notes" --target "$GITHUB_SHA" --latest
+          fi
+
+          # Keep only the latest version: remove older releases and their tags.
+          for old in $(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" -q ".[] | select(.tag_name != \"$tag\") | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$old"
+          done
+          for old in $(git ls-remote --tags origin | sed -n 's#.*refs/tags/\([^^]*\)$#\1#p'); do
+            if [ "$old" != "$tag" ]; then git push origin ":refs/tags/$old" || true; fi
+          done
